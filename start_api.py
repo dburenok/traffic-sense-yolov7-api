@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request
 from pathlib import Path
 from shutil import rmtree
+import uuid
 
 import argparse
 import time
@@ -13,8 +14,9 @@ from utils.general import check_img_size, non_max_suppression, scale_coords
 from utils.torch_utils import time_synchronized
 
 
-# Initialize Flask app and argument object
+# Initialize Flask app
 app = Flask(__name__)
+Path('./temp').mkdir(exist_ok=True)
 opt = None
 
 # Initialize YOLOv7
@@ -26,9 +28,7 @@ imgsz = check_img_size(480, s=stride)  # check img_size
 # set_logging()
 
 
-def detect(source):
-    t0 = time.time()
-    
+def detect(source):    
     # Set Dataloader
     dataset = LoadImages(source, img_size=imgsz, stride=stride)
 
@@ -36,7 +36,10 @@ def detect(source):
     names = model.module.names if hasattr(model, 'module') else model.names
 
     # Run inference
+    vehicle_counts = {}
     for path, img, im0s, _ in dataset:
+        image_name = path.split("/")[-1]
+        t0 = time.time()
         img = torch.from_numpy(img).to(device)
         img = img.float()
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -51,23 +54,22 @@ def detect(source):
         pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
 
         # Process detections
+        vehicle_count = 0
         for _, det in enumerate(pred):  # detections per image
             p, s, im0, _ = path, '', im0s, getattr(dataset, 'frame', 0)
             p = Path(p)  # to Path
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
-
-                vehicle_count = 0
-                # Print results
+                # Count results
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # detections per class
                     if c in [2, 3, 5, 7]:
                         vehicle_count += int(n)
                     s += f'{n} {names[int(c)]}{"s" * (n > 1)}, '  # add to string
-
-    print(f'[{source}] {s}Done. ({time.time() - t0:.3f}s)')
-    return vehicle_count
+        vehicle_counts[image_name] = vehicle_count
+        print(f'[{image_name}] {s}Done. ({time.time() - t0:.3f}s)')
+    return vehicle_counts
 
 
 @app.route('/health', methods=['GET'])
@@ -83,25 +85,27 @@ def count_vehicles():
     t0 = time.time()
 
     # Initialize temp directory for image files
-    Path("./temp").mkdir(exist_ok=True)
-    vehicle_counts = {}
+    temp_dir = f'./temp/{uuid.uuid4().hex}'
+    Path(temp_dir).mkdir(exist_ok=True)
     
     received_files = request.files.getlist("images")
     for f in received_files:
         file_name = f.headers['Content-Disposition'].split("filename=")[1][1:-1]
-        file_path = f'./temp/{file_name}'
+        file_path = f'{temp_dir}/{file_name}'
         f.save(file_path)
-        with torch.no_grad():
-            vehicle_counts[file_name.split('.')[0]] = detect(file_path)
-    time_taken = f'{time.time() - t0:.3f}s'
-    return jsonify({'vehicle_counts' : vehicle_counts, 'time_taken': time_taken})
+
+    with torch.no_grad():
+        vehicle_counts = detect(temp_dir)
+        time_taken = f'{time.time() - t0:.3f}s'
+        rmtree(temp_dir)
+        return jsonify({'vehicle_counts' : vehicle_counts, 'time_taken': time_taken})
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='yolov7.pt', help='model.pt path(s)')
     parser.add_argument('--source', type=str, default='inference/images', help='source')  # file/folder, 0 for webcam
-    parser.add_argument('--img-size', type=int, default=480, help='inference size (pixels)')
+    parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='IOU threshold for NMS')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
