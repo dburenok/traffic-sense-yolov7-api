@@ -40,3 +40,4 @@ thop  # FLOPs computation
 
 # API Wrapper
 Flask
+gunicorn
