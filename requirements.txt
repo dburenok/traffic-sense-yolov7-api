@@ -38,6 +38,6 @@ thop  # FLOPs computation
 # pycocotools>=2.0  # COCO mAP
 # roboflow
 
-# API Wrapper
+# API
 Flask
 gunicorn
